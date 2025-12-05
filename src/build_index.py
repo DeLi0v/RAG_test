@@ -1,98 +1,99 @@
+# src/build_index.py
 import os
-import faiss
-import numpy as np
-from src.embedder import LocalEmbedder
+import json
 from pathlib import Path
-import logging
-from docx import Document
-import PyPDF2
-import pandas as pd
+import numpy as np
+import faiss
+from tqdm import tqdm
+from .doc_loader import load_with_docling, load_txt_file
+from .embedder import LMStudioEmbedder
+from .utils import VECTOR_DIR, DATA_DIR, logger, CHUNK_MAX_SIZE, CHUNK_OVERLAP
 
-logger = logging.getLogger("rag")
 
-# Максимальный размер чанка (символов)
-MAX_CHUNK_SIZE = 1000
-# Шаг перекрытия между чанками
-CHUNK_OVERLAP = 200
+def chunk_text(text, max_size=CHUNK_MAX_SIZE, overlap=CHUNK_OVERLAP):
+    text = text.strip()
+    if len(text) <= max_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_size
+        chunks.append(text[start:end].strip())
+        start += max_size - overlap
+    return chunks
 
-def load_documents(folder_path):
-    """Загрузка файлов и разбиение на чанки"""
+
+def load_all_and_chunk(data_folder):
     docs = []
-    folder = Path(folder_path)
+    folder = Path(data_folder)
 
     for file in folder.iterdir():
-        if not file.is_file():
+        if file.is_dir():
+            docs.extend(load_all_and_chunk(str(file)))
             continue
 
-        text = ""
         try:
             if file.suffix.lower() == ".txt":
-                try:
-                    with open(file, "r", encoding="utf-8") as f:
-                        text = f.read()
-                except UnicodeDecodeError:
-                    with open(file, "r", encoding="cp1251") as f:
-                        text = f.read()
-            elif file.suffix.lower() == ".docx":
-                doc = Document(file)
-                text = "\n".join([p.text for p in doc.paragraphs])
-            elif file.suffix.lower() == ".pdf":
-                with open(file, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    for page in reader.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-            elif file.suffix.lower() in [".xls", ".xlsx"]:
-                xls = pd.ExcelFile(file)
-                for sheet_name in xls.sheet_names:
-                    df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
-                    text += "\n".join(df.fillna("").astype(str).agg(" ".join, axis=1)) + "\n"
+                text = load_txt_file(str(file))
             else:
-                logger.warning(f"Формат не поддерживается: {file.name}")
+                text = load_with_docling(str(file))
+
+            if not text.strip():
                 continue
 
-            # Разбиваем на чанки
-            start = 0
-            text = text.strip()
-            while start < len(text):
-                end = start + MAX_CHUNK_SIZE
-                chunk_text = text[start:end]
-                docs.append({"text": chunk_text, "source": str(file.name)})
-                start += MAX_CHUNK_SIZE - CHUNK_OVERLAP
-
+            chunks = chunk_text(text, CHUNK_MAX_SIZE, CHUNK_OVERLAP)
+            for chunk in chunks:
+                docs.append(
+                    {
+                        "text": chunk,
+                        "source": file.name,
+                        "type": "text",  # TODO: можно добавить распознавание таблиц
+                    }
+                )
+            logger.info("Parsed %s -> %d chunks", file.name, len(chunks))
         except Exception as e:
-            logger.error(f"Ошибка при чтении {file.name}: {e}")
+            logger.exception("Error parsing %s: %s", file.name, e)
 
-    logger.info(f"Загружено и разбито на {len(docs)} чанков")
+    logger.info("Total chunks: %d", len(docs))
     return docs
 
-def build_faiss_index(docs, embedder):
-    vectors = embedder.embed([d["text"] for d in docs])
-    vectors_np = np.array(vectors).astype("float32")
 
-    dim = vectors_np.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(vectors_np)
-
-    return index, vectors_np
-
-def save_index(index, vectors_np, docs, out_dir="vectorstore"):
+def build_index(data_folder=DATA_DIR, out_dir=VECTOR_DIR, batch_size=16):
     os.makedirs(out_dir, exist_ok=True)
-    faiss.write_index(index, f"{out_dir}/docs.index")
-    np.save(f"{out_dir}/docs.npy", vectors_np)
+    embedder = LMStudioEmbedder(batch_size=batch_size)
+    docs = load_all_and_chunk(data_folder)
 
-    with open(f"{out_dir}/docs.jsonl", "w", encoding="utf-8") as f:
-        import json
+    if not docs:
+        logger.error("No texts found to index")
+        return
+
+    texts = [d["text"] for d in docs]
+    logger.info("Generating embeddings for %d chunks", len(texts))
+
+    # Батчинг с tqdm для прогресс-бара
+    embeddings = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Embedding chunks", ncols=80):
+        batch = texts[i : i + batch_size]
+        batch_emb = embedder.embed(batch)
+        embeddings.append(batch_emb)
+
+    embs_np = np.vstack(embeddings)
+
+    # создаем FAISS индекс с косинусной схожестью (inner product)
+    dim = embs_np.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(embs_np)
+
+    # сохраняем индекс и метаданные
+    faiss.write_index(index, str(Path(out_dir) / "docs.index"))
+    np.save(Path(out_dir) / "embeddings.npy", embs_np)
+
+    with open(Path(out_dir) / "docs.jsonl", "w", encoding="utf-8") as f:
         for d in docs:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
-def build_index():
-    embedder = LocalEmbedder()
-    docs = load_documents("data/")
-    index, vectors_np = build_faiss_index(docs, embedder)
-    save_index(index, vectors_np, docs)
-    print("FAISS index built successfully!")
+    logger.info("Index built: %s (dim=%d, n=%d)", out_dir, dim, len(texts))
+
 
 if __name__ == "__main__":
     build_index()

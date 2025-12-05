@@ -1,13 +1,14 @@
-from src.rag_rerank import RAGRerankPipeline
+# run_chat.py
+from src.rag_query import RAGPipeline
 
-rag = RAGRerankPipeline()
-
+rag = RAGPipeline()
+print("Вопрос (выйти: q или й):")
 while True:
-    q = input('\nВопрос (выход "q" или "й"): ').strip()
-    if q.lower() in ["quit", "выйти", "q", "й"]:
-        print("👋 Выход из программы.")
-        break
+    q = input("> ").strip()
     if not q:
-        print("⚠️ Введите вопрос или команду для выхода.")
         continue
-    print("\nОтвет:", rag.ask(q))
+    if q.lower() in ["q", "й", "exit", "выход"]:
+        break
+    print("\nОтвет:")
+    ans = rag.ask(q)
+    print("\n---\n")

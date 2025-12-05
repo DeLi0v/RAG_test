@@ -1,12 +1,21 @@
+# Core
 numpy
-pandas
 requests
-faiss-cpu # если есть GPU - то faiss-gpu
-sentence-transformers
-openai
 python-dotenv
-einops
-python-docx
-PyPDF2
-openpyxl
+tqdm
+
+# Document parsing
+docling
+
+# Vector DB / retrieval
+faiss-cpu # faiss-gpu если есть GPU
+sentence-transformers
+
+# LLM / LM Studio
 lmstudio
+
+# Documents handling
+pandas
+
+# Optional faster torch for reranker (install matching CUDA if you have GPU)
+torch

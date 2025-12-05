@@ -1,72 +1,56 @@
+# src/rag_pipeline.py
 import json
-import numpy as np
 import faiss
-from src.embedder import LocalEmbedder
-from src.lmstudio_client import get_lmstudio_client
 import lmstudio as lms
+from .embedder import LMStudioEmbedder
+from .retriever import RetrieverWithRerank
+from .utils import VECTOR_DIR, logger
 
 
 class RAGPipeline:
-    def __init__(self):
-        self.embedder = LocalEmbedder()
-        self.index = faiss.read_index("vectorstore/docs.index")
+    def __init__(self, k=5):
+        self.embedder = LMStudioEmbedder()
+        self.index = faiss.read_index(f"{VECTOR_DIR}/docs.index")
 
-        # Загружаем чанки из jsonl
+        # Загружаем чанки
         self.docs = []
-        with open("vectorstore/docs.jsonl", "r", encoding="utf-8") as f:
+        with open(f"{VECTOR_DIR}/docs.jsonl", "r", encoding="utf-8") as f:
             for line in f:
                 self.docs.append(json.loads(line))
 
-        self.client = get_lmstudio_client()
+        self.k = k
+        self.retriever = RetrieverWithRerank(self.index, self.docs)
 
-    def search(self, query, k=5):
-        print("🔍 Поиск релевантной информации...")
-
-        vec = self.embedder.embed(query)
-        vec = np.array(vec, dtype="float32")
-        if vec.ndim == 1:
-            vec = vec.reshape(1, -1)
-
-        D, I = self.index.search(vec, k)
-        results = [self.docs[int(i)] for i in I[0] if i != -1]
-
-        print(f"✅ Информация найдена")
-        print(f"✅ Найдено {len(results)} релевантных чанков")
-        return results
+    def search_docs(self, query):
+        # Эмбеддинг вопроса
+        query_vec = self.embedder.embed(query)
+        top_docs = self.retriever.retrieve(query_vec=query_vec, k=self.k, top_n=50)
+        return top_docs
 
     def ask(self, query):
-        context_docs = self.search(query)
+        context_docs = self.search_docs(query)
+        if not context_docs:
+            return "❌ Нет подходящей информации в базе."
+
         context_texts = [d["text"] for d in context_docs]
         context = "\n\n".join(context_texts)
         sources = list(dict.fromkeys(d["source"] for d in context_docs))
 
-        print("🤖 Генерация ответа ИИ...")
+        prompt = f"""
+            Контекст:\n{context}
+            Вопрос пользователя: {query}
+            """
 
-        prompt_system = f"""
-        Контекст: \n{context}
-
-        Вопрос пользователя: {query}
-        """
-
+        logger.info("🤖 Генерация ответа ИИ...")
         lms.set_sync_api_timeout(600)
         model = lms.llm("lmstudio-community/mistral-7b-instruct")
+        response_stream = model.respond_stream(prompt, config={"temperature": 0.0})
 
-        respond_predicted = model.respond_stream(
-            prompt_system,
-            config={
-                "temperature": 0.0,
-            },
-            on_prompt_processing_progress=(
-                lambda progress: print(f"{round(progress*100)}% complete")
-            ),
-        )
-
-        answer_text = ""
-        for fragment in respond_predicted:
+        answer = ""
+        for fragment in response_stream:
             chunk = fragment.content
             print(chunk, end="", flush=True)
-            answer_text += chunk
+            answer += chunk
 
         print(f"\n📄 Источники:\n" + "\n".join(sources))
-
-        return ""
+        return answer
