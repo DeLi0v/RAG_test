@@ -40,7 +40,9 @@ class RetrieverWithRerank:
             pairs = [
                 (query_vec, c["text"]) for c in candidates
             ]  # <- query_text передается извне
-            pairs = [(query_vec, doc["text"]) for doc in self.docs]
+            pairs = [
+                (str(q), str(d)) for q, d in pairs if q is not None and d is not None
+            ]
             scores = self.reranker.predict(pairs, show_progress_bar=False)
             scored = list(zip(candidates, scores))
             scored.sort(key=lambda x: x[1], reverse=True)

@@ -85,7 +85,8 @@ def build_index(data_folder=DATA_DIR, out_dir=VECTOR_DIR, batch_size=16):
     index.add(embs_np)
 
     # сохраняем индекс и метаданные
-    faiss.write_index(index, str(Path(out_dir) / "docs.index"))
+    out_file = str(Path(out_dir) / "docs.index")  # FAISS требует str
+    faiss.write_index(index, out_file)
     np.save(Path(out_dir) / "embeddings.npy", embs_np)
 
     with open(Path(out_dir) / "docs.jsonl", "w", encoding="utf-8") as f:

@@ -44,7 +44,13 @@ class RAGPipeline:
         logger.info("🤖 Генерация ответа ИИ...")
         lms.set_sync_api_timeout(600)
         model = lms.llm("lmstudio-community/mistral-7b-instruct")
-        response_stream = model.respond_stream(prompt, config={"temperature": 0.0})
+        response_stream = model.respond_stream(
+            prompt,
+            config={"temperature": 0.0},
+            on_prompt_processing_progress=(
+                lambda progress: print(f"{round(progress*100)}% complete")
+            ),
+        )
 
         answer = ""
         for fragment in response_stream:
