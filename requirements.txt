@@ -1,0 +1,12 @@
+numpy
+pandas
+requests
+faiss-cpu # если есть GPU - то faiss-gpu
+sentence-transformers
+openai
+python-dotenv
+einops
+python-docx
+PyPDF2
+openpyxl
+lmstudio
